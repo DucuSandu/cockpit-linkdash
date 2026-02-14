@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "linkdash",
+  "requires": {
+    "cockpit": "318"
+  },
+  "tools": {
+    "index": {
+      "label": "LinkDash",
+      "path": "index.html",
+      "keywords": [
+        {
+          "matches": ["links", "bookmarks", "dashboard"]
+        }
+      ]
+    }
+  }
+}

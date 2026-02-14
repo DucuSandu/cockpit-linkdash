@@ -1,0 +1,157 @@
+<!-- index.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LinkDash</title>
+
+  <script src="../base1/cockpit.js"></script>
+  <!-- Cockpit shell theme (PatternFly tokens) -->
+  <link rel="stylesheet" href="../shell/shell.css" />
+  <link rel="stylesheet" href="../../static/branding.css" />
+
+  <!-- LinkDash styles (use only --ld-* vars mapped from PF tokens) -->
+  <link rel="stylesheet" href="linkdash.css" />
+</head>
+
+<body>
+  <div id="app" class="ld-page">
+  	<header class="ld-header">
+	  <div class="ld-titleblock">
+		<div class="ld-title">LinkDash</div>
+		<div class="ld-subtitle">Service bookmarks</div>
+	  </div>
+
+	  <div class="ld-header-right">
+		<div class="ld-header-actions">
+		  <button id="addBtn" type="button" class="ld-btn ld-btn-primary">Add link</button>
+		  <button id="importBtn" type="button" class="ld-btn">Import</button>
+		  <button id="exportBtn" type="button" class="ld-btn">Export</button>
+		  <button id="saveOrderBtn" type="button" class="ld-btn" disabled>Save order</button>
+		</div>
+
+		<div id="permissionNote" class="ld-note ld-note-info" hidden>
+		  Read-only mode. Sign in as an administrator to add/edit/delete links.
+		</div>
+	  </div>
+	</header>
+
+    <section class="ld-toolbar">
+      <div class="ld-field ld-field-grow">
+        <label for="searchInput">Search</label>
+        <input id="searchInput" class="ld-input" type="text" placeholder="Search by name, group, url, description" />
+      </div>
+
+      <div class="ld-field">
+        <label for="groupFilter">Group</label>
+        <select id="groupFilter" class="ld-select"></select>
+      </div>
+
+      <div class="ld-field">
+        <label for="viewToggle">View</label>
+        <select id="viewToggle" class="ld-select">
+          <option value="cards">Cards</option>
+          <option value="table">Table</option>
+        </select>
+      </div>
+
+      <div class="ld-actions">
+      
+      </div>
+
+      <input id="importFile" type="file" accept="application/json,.json" hidden />
+    </section>
+
+    <div id="orderNote" class="ld-note ld-note-warn" hidden>
+      Order changed. Click “Save order” to persist it.
+    </div>
+
+    <div class="ld-tip">
+      Tip: drag cards/rows to reorder. Reorder is global (independent of search/group filters).
+    </div>
+
+    <div id="toastHost" class="ld-toasts" aria-live="polite" aria-atomic="true"></div>
+
+    <section id="frameArea" class="ld-frame" hidden>
+      <div class="ld-frame-head">
+        <div class="ld-frame-titles">
+          <div id="frameTitle" class="ld-frame-title">Embedded</div>
+          <div id="frameUrl" class="ld-frame-url"></div>
+          <div class="ld-frame-hint">
+            If the page does not load, it likely blocks embedding (X-Frame-Options / CSP).
+          </div>
+        </div>
+        <div class="ld-frame-actions">
+          <button id="openFrameNewTabBtn" type="button" class="ld-btn">Open in new tab</button>
+          <button id="closeFrameBtn" type="button" class="ld-btn">Close</button>
+        </div>
+      </div>
+      <div class="ld-frame-body">
+        <iframe id="embedFrame" class="ld-iframe" title="Embedded content" referrerpolicy="no-referrer"></iframe>
+      </div>
+    </section>
+
+    <main>
+      <div id="cardsContainer" class="ld-grid"></div>
+      <div id="tableContainer" hidden></div>
+    </main>
+
+    <dialog id="editDialog" class="ld-dialog">
+      <form method="dialog" id="editForm" class="ld-form">
+        <div class="ld-dialog-title" id="dialogTitle">Add link</div>
+
+        <div class="ld-form-row">
+          <label for="fName">Name *</label>
+          <input id="fName" class="ld-input" type="text" required />
+        </div>
+
+        <div class="ld-form-row">
+          <label for="fUrl">URL *</label>
+          <input id="fUrl" class="ld-input" type="text" required placeholder="https://example.com" />
+          <div class="ld-help">Only http/https. If you omit scheme, https:// will be added.</div>
+        </div>
+
+        <div class="ld-form-row">
+          <label for="fGroup">Group *</label>
+          <input id="fGroup" class="ld-input" type="text" required list="groupList" />
+          <datalist id="groupList"></datalist>
+        </div>
+
+        <div class="ld-form-row">
+          <label for="fDesc">Description</label>
+          <textarea id="fDesc" class="ld-textarea" rows="3"></textarea>
+        </div>
+
+        <div class="ld-form-row">
+          <label class="ld-check">
+            <input id="fFrame" type="checkbox" />
+            <span>Open in frame</span>
+          </label>
+        </div>
+
+        <div class="ld-dialog-actions">
+          <button id="deleteBtn" type="button" class="ld-btn ld-btn-danger ld-btn-danger-corner" hidden>Delete</button>
+          <div class="ld-dialog-actions-right">
+            <button id="cancelBtn" type="button" class="ld-btn">Cancel</button>
+            <button id="saveBtn" type="submit" class="ld-btn ld-btn-primary">Save</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="confirmDialog" class="ld-dialog">
+      <form method="dialog" id="confirmForm" class="ld-form">
+        <div class="ld-dialog-title">Delete link</div>
+        <div id="confirmText" class="ld-confirm-text">Are you sure?</div>
+        <div class="ld-dialog-actions">
+          <button id="confirmCancel" type="button" class="ld-btn">Cancel</button>
+          <button id="confirmDelete" type="submit" class="ld-btn ld-btn-danger">Delete</button>
+        </div>
+      </form>
+    </dialog>
+  </div>
+
+  <script src="linkdash.js"></script>
+</body>
+</html>
