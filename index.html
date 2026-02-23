@@ -22,8 +22,12 @@
 		<div class="ld-title">LinkDash</div>
 		<div class="ld-subtitle">Service bookmarks</div>
 	  </div>
-
+		<div id="orderNote" class="ld-tip ld-tip-small">
+   	 	    Tip: drag cards/rows to reorder. Reorder is global (independent of search/group filters).
+  		</div>
 	  <div class="ld-header-right">
+
+
 		<div class="ld-header-actions">
 		  <button id="addBtn" type="button" class="ld-btn ld-btn-primary">Add link</button>
 		  <button id="importBtn" type="button" class="ld-btn">Import</button>
@@ -124,6 +128,13 @@
           <label class="ld-check">
             <input id="fFrame" type="checkbox" />
             <span>Open in frame</span>
+          </label>
+        </div>
+
+        <div class="ld-form-row" id="fGlobalRow" hidden>
+          <label class="ld-check">
+            <input id="fGlobal" type="checkbox" />
+            <span>Global link (visible to all users)</span>
           </label>
         </div>
 

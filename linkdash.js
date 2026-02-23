@@ -2,10 +2,16 @@
 (() => {
   "use strict";
 
-  const STORAGE_DIR = "/etc/cockpit/linkdash";
-  const STORAGE_PATH = "/etc/cockpit/linkdash/linkdash.json";
-  const LS_KEY = "linkdash.links.v1";
-  const DEFAULT_GROUP = "General";
+  const STORAGE_DIR      = "/etc/cockpit/linkdash";
+  const GLOBAL_PATH      = "/etc/cockpit/linkdash/global.json";
+  const USERS_DIR        = "/etc/cockpit/linkdash/users";
+  const USERLIST_PATH    = "/etc/cockpit/linkdash/userlist.json";
+  const LS_KEY_GLOBAL    = "linkdash.global.v2";
+  const LS_KEY_PERSONAL  = "linkdash.personal.v2";
+  const DEFAULT_GROUP    = "General";
+  const ADMIN_EDITED_TAG = "(Admin Edited)";
+
+  // ─── Helpers ───────────────────────────────────────────────────────────────
 
   function el(id) {
     const node = document.getElementById(id);
@@ -13,9 +19,7 @@
     return node;
   }
 
-  function nowIso() {
-    return new Date().toISOString();
-  }
+  function nowIso() { return new Date().toISOString(); }
 
   function escapeHtml(s) {
     return String(s ?? "")
@@ -37,9 +41,7 @@
     try {
       const url = new URL(u);
       return url.protocol === "http:" || url.protocol === "https:";
-    } catch {
-      return false;
-    }
+    } catch { return false; }
   }
 
   function uuidv4() {
@@ -48,7 +50,7 @@
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     const h = [...b].map(x => x.toString(16).padStart(2, "0")).join("");
-    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
   }
 
   function uniqSorted(arr) {
@@ -66,91 +68,61 @@
     window.setTimeout(() => t.remove(), timeoutMs);
   }
 
-  // PFv6 theme sync: copy pf-v6-theme-* from Cockpit shell
   function syncThemeFromParent() {
     try {
-      const ours = document.documentElement.classList;
+      const ours   = document.documentElement.classList;
       const theirs = window.parent?.document?.documentElement?.classList;
       if (!theirs) return;
-
-      // Remove old theme classes
-      for (const c of Array.from(ours)) {
-        if (c.startsWith("pf-v6-theme-")) ours.remove(c);
-      }
-
-      // Copy theme class(es) from the Cockpit shell
-      for (const c of Array.from(theirs)) {
-        if (c.startsWith("pf-v6-theme-")) ours.add(c);
-      }
-    } catch {
-      // ignore
-    }
+      for (const c of Array.from(ours))   { if (c.startsWith("pf-v6-theme-")) ours.remove(c); }
+      for (const c of Array.from(theirs)) { if (c.startsWith("pf-v6-theme-")) ours.add(c); }
+    } catch { /* ignore */ }
   }
 
-  function byGroupThenName(a, b) {
-    const ag = (a.group || "").toLowerCase();
-    const bg = (b.group || "").toLowerCase();
-    if (ag !== bg) return ag.localeCompare(bg);
-    const an = (a.name || "").toLowerCase();
-    const bn = (b.name || "").toLowerCase();
-    return an.localeCompare(bn);
-  }
+  // ─── Link hydration ────────────────────────────────────────────────────────
 
-  function hydrateLink(raw) {
-    const name = String(raw?.name ?? "").trim();
-    const url = String(raw?.url ?? "").trim();
-    const group = String(raw?.group ?? DEFAULT_GROUP).trim() || DEFAULT_GROUP;
-    const description = String(raw?.description ?? "").trim();
+  function hydrateLink(raw, layer, owner) {
+    const name          = String(raw?.name ?? "").trim();
+    const url           = String(raw?.url  ?? "").trim();
+    const group         = String(raw?.group ?? DEFAULT_GROUP).trim() || DEFAULT_GROUP;
+    const description   = String(raw?.description ?? "").trim();
     const open_in_frame = !!raw?.open_in_frame;
-
-    const id = String(raw?.id ?? "").trim() || uuidv4();
-    const created_at = String(raw?.created_at ?? "").trim() || nowIso();
-    const updated_at = String(raw?.updated_at ?? "").trim() || created_at;
-
-    return {
-      id,
-      name,
-      url,
-      group,
-      description,
-      open_in_frame,
-      created_at,
-      updated_at,
-    };
+    const id            = String(raw?.id ?? "").trim() || uuidv4();
+    const created_at    = String(raw?.created_at ?? "").trim() || nowIso();
+    const updated_at    = String(raw?.updated_at ?? "").trim() || created_at;
+    const _layer        = raw?._layer || layer  || "personal";
+    const _owner        = raw?._owner || owner  || "";
+    return { id, name, url, group, description, open_in_frame,
+             created_at, updated_at, _layer, _owner };
   }
 
   function validateLink(link) {
-    const name = String(link?.name || "").trim();
-    const url = String(link?.url || "").trim();
-    const group = String(link?.group || "").trim();
-
-    if (!name) return "Name is required.";
-    if (!group) return "Group is required.";
-    if (!url) return "URL is required.";
-
-    const normalized = normalizeUrl(url);
-    if (!isHttpHttpsUrl(normalized)) return "URL must be http/https.";
-
+    if (!String(link?.name  || "").trim()) return "Name is required.";
+    if (!String(link?.group || "").trim()) return "Group is required.";
+    if (!String(link?.url   || "").trim()) return "URL is required.";
+    if (!isHttpHttpsUrl(normalizeUrl(link.url))) return "URL must be http/https.";
     return null;
   }
 
+  // ─── State ─────────────────────────────────────────────────────────────────
+
   const state = {
-    isAdmin: false,
-    links: [],
-    filtered: [],
-    editing: null,
-    deleting: null,
-    dirtyOrder: false,
-    filter: {
-      q: "",
-      group: "",
-      view: "cards",
-    },
+    isAdmin:       false,
+    currentUser:   "",
+    globalLinks:   [],
+    personalLinks: {},    // { username: [link, ...] }
+    allLinks:      [],    // merged, computed
+    filtered:      [],
+    editing:       null,
+    deleting:      null,
+    dirtyGlobal:   false,
+    dirtyPersonal: false,
+    filter: { q: "", group: "", view: "cards" },
   };
+
+  // ─── Admin / user detection ────────────────────────────────────────────────
 
   async function detectAdmin() {
     try {
-      // cockpit.permission is not always present; be defensive
       if (cockpit?.permission) {
         const perm = cockpit.permission({ admin: true });
         state.isAdmin = !!perm.allowed;
@@ -160,188 +132,217 @@
           render();
         });
       } else {
-        // fallback: try to write test file? keep read-only mode by default
         state.isAdmin = false;
       }
-    } catch {
-      state.isAdmin = false;
-    }
+    } catch { state.isAdmin = false; }
   }
+
+  async function detectCurrentUser() {
+    try {
+      const u = await cockpit.user();
+      state.currentUser = u?.name || "";
+    } catch { state.currentUser = ""; }
+  }
+
+  // ─── UI ────────────────────────────────────────────────────────────────────
 
   function updateAdminUi() {
-    const permNote = document.getElementById("permissionNote");
-    if (permNote) permNote.hidden = !!state.isAdmin;
-
-    const addBtn = document.getElementById("addBtn");
-    const importBtn = document.getElementById("importBtn");
-    const exportBtn = document.getElementById("exportBtn");
+    const permNote     = document.getElementById("permissionNote");
+    const addBtn       = document.getElementById("addBtn");
+    const importBtn    = document.getElementById("importBtn");
+    const exportBtn    = document.getElementById("exportBtn");
     const saveOrderBtn = document.getElementById("saveOrderBtn");
 
-    if (addBtn) addBtn.disabled = !state.isAdmin;
-    if (importBtn) importBtn.disabled = !state.isAdmin;
-    if (saveOrderBtn) saveOrderBtn.disabled = !state.isAdmin || !state.dirtyOrder;
-
-    // Export can be allowed even in read-only mode
-    if (exportBtn) exportBtn.disabled = false;
+    // Everyone can add personal links; only admins can import
+    if (permNote)     permNote.hidden = true;
+    if (addBtn)       addBtn.disabled  = false;
+    if (importBtn)    importBtn.disabled = !state.isAdmin;
+    if (exportBtn)    exportBtn.disabled = false;
+    if (saveOrderBtn) saveOrderBtn.disabled = !(state.dirtyGlobal || state.dirtyPersonal);
   }
 
-  async function ensureStorageDir() {
-    try {
-      await cockpit.spawn(["/bin/mkdir", "-p", STORAGE_DIR], { superuser: "try" });
-    } catch {
-      // ignore (read-only mode)
-    }
+  // ─── File I/O ──────────────────────────────────────────────────────────────
+
+  async function ensureDir(path) {
+    try { await cockpit.spawn(["/bin/mkdir", "-p", path], { superuser: "try" }); } catch { /* ignore */ }
   }
 
   async function readFile(path) {
     const fs = cockpit.file(path, { superuser: "try" });
-    try {
-      return await fs.read();
-    } catch {
-      return null;
-    } finally {
-      fs.close();
-    }
+    try   { return await fs.read(); }
+    catch { return null; }
+    finally { fs.close(); }
   }
 
   async function writeFile(path, content) {
     const fs = cockpit.file(path, { superuser: "try" });
-    try {
-      await fs.replace(content);
-      return true;
-    } catch (e) {
-      console.error("write failed:", e);
-      return false;
-    } finally {
-      fs.close();
+    try   { await fs.replace(content); return true; }
+    catch (e) { console.error("write failed:", path, e); return false; }
+    finally { fs.close(); }
+  }
+
+  // ─── Userlist ──────────────────────────────────────────────────────────────
+
+  async function readUserlist() {
+    const raw = await readFile(USERLIST_PATH);
+    if (!raw) return [];
+    try { return JSON.parse(raw); } catch { return []; }
+  }
+
+  async function registerUser(username) {
+    const list = await readUserlist();
+    if (!list.includes(username)) {
+      list.push(username);
+      await ensureDir(STORAGE_DIR);
+      await writeFile(USERLIST_PATH, JSON.stringify(list, null, 2));
     }
   }
 
-  async function loadLinks() {
-    // prefer file, fallback to localStorage for read-only demos
-    const raw = await readFile(STORAGE_PATH);
+  // ─── Load ──────────────────────────────────────────────────────────────────
+
+  async function loadGlobalLinks() {
+    const raw = await readFile(GLOBAL_PATH);
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
-        const links = Array.isArray(parsed?.links) ? parsed.links : Array.isArray(parsed) ? parsed : [];
-        state.links = links.map(hydrateLink).sort(byGroupThenName);
+        const arr = Array.isArray(parsed?.links) ? parsed.links : Array.isArray(parsed) ? parsed : [];
+        state.globalLinks = arr.map(l => hydrateLink(l, "global", ""));
         return;
-      } catch (e) {
-        console.warn("Invalid JSON in storage file, falling back to localStorage:", e);
-      }
+      } catch (e) { console.warn("global.json parse error:", e); }
     }
-
     try {
-      const fromLs = window.localStorage.getItem(LS_KEY);
-      if (fromLs) {
-        const parsed = JSON.parse(fromLs);
-        state.links = (Array.isArray(parsed) ? parsed : []).map(hydrateLink).sort(byGroupThenName);
-      } else {
-        state.links = [];
-      }
-    } catch {
-      state.links = [];
-    }
+      const fromLs = window.localStorage.getItem(LS_KEY_GLOBAL);
+      state.globalLinks = fromLs
+        ? JSON.parse(fromLs).map(l => hydrateLink(l, "global", ""))
+        : [];
+    } catch { state.globalLinks = []; }
   }
 
-  async function saveLinksToDisk() {
+  async function loadPersonalLinks(username) {
+    if (!username) return;
+    const path = `${USERS_DIR}/${username}.json`;
+    const raw  = await readFile(path);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        const arr = Array.isArray(parsed?.links) ? parsed.links : Array.isArray(parsed) ? parsed : [];
+        state.personalLinks[username] = arr.map(l => hydrateLink(l, "personal", username));
+        return;
+      } catch (e) { console.warn(`user ${username} parse error:`, e); }
+    }
+    if (username === state.currentUser) {
+      try {
+        const fromLs = window.localStorage.getItem(LS_KEY_PERSONAL);
+        if (fromLs) {
+          state.personalLinks[username] = JSON.parse(fromLs).map(l => hydrateLink(l, "personal", username));
+          return;
+        }
+      } catch { /* ignore */ }
+    }
+    state.personalLinks[username] = [];
+  }
+
+  async function loadAllLinks() {
+    await loadGlobalLinks();
+    if (state.isAdmin) {
+      const userlist = await readUserlist();
+      const users    = uniqSorted([...userlist, state.currentUser].filter(Boolean));
+      for (const u of users) await loadPersonalLinks(u);
+    } else {
+      await loadPersonalLinks(state.currentUser);
+    }
+    rebuildAllLinks();
+  }
+
+  function rebuildAllLinks() {
+    const personal = Object.values(state.personalLinks).flat();
+    state.allLinks = [...state.globalLinks, ...personal];
+  }
+
+  // ─── Save ──────────────────────────────────────────────────────────────────
+
+  async function saveGlobalLinks() {
     if (!state.isAdmin) return false;
-
-    await ensureStorageDir();
-
+    await ensureDir(STORAGE_DIR);
     const payload = JSON.stringify(
-      {
-        version: 1,
-        updated_at: nowIso(),
-        links: state.links,
-      },
-      null,
-      2
-    );
-
-    const ok = await writeFile(STORAGE_PATH, payload);
-    if (!ok) toast("warn", "Could not save to disk (permission?)");
+      { version: 2, updated_at: nowIso(), links: state.globalLinks }, null, 2);
+    const ok = await writeFile(GLOBAL_PATH, payload);
+    if (!ok) toast("warn", "Could not save global links (permission?)");
+    else {
+      try { window.localStorage.setItem(LS_KEY_GLOBAL, JSON.stringify(state.globalLinks)); } catch { /* ignore */ }
+    }
     return ok;
   }
 
-  function saveLinksToLocalStorage() {
-    try {
-      window.localStorage.setItem(LS_KEY, JSON.stringify(state.links));
-    } catch {
-      // ignore
+  async function savePersonalLinks(username) {
+    if (!username) return false;
+    await ensureDir(USERS_DIR);
+    await registerUser(username);
+    const links   = state.personalLinks[username] || [];
+    const payload = JSON.stringify({ version: 2, updated_at: nowIso(), links }, null, 2);
+    const ok      = await writeFile(`${USERS_DIR}/${username}.json`, payload);
+    if (!ok) toast("warn", "Could not save personal links (permission?)");
+    else if (username === state.currentUser) {
+      try { window.localStorage.setItem(LS_KEY_PERSONAL, JSON.stringify(links)); } catch { /* ignore */ }
     }
+    return ok;
   }
 
-  function applyFilter() {
-    const q = (state.filter.q || "").toLowerCase().trim();
-    const group = (state.filter.group || "").toLowerCase().trim();
+  // ─── Filter ────────────────────────────────────────────────────────────────
 
-    const filtered = state.links
+  function applyFilter() {
+    const q     = (state.filter.q     || "").toLowerCase().trim();
+    const group = (state.filter.group || "").toLowerCase().trim();
+    state.filtered = state.allLinks
       .map((l, idx) => ({ x: l, idx }))
       .filter(({ x: l }) => {
         if (group && (l.group || "").toLowerCase() !== group) return false;
         if (!q) return true;
-        const hay = `${l.name} ${l.group} ${l.url} ${l.description}`.toLowerCase();
+        const hay = `${l.name} ${l.group} ${l.url} ${l.description} ${l._owner}`.toLowerCase();
         return hay.includes(q);
       });
-
-    state.filtered = filtered;
   }
 
   function rebuildGroupFilter() {
-    const sel = el("groupFilter");
-    const groups = uniqSorted(state.links.map(x => x.group).concat([DEFAULT_GROUP]));
-
+    const sel     = el("groupFilter");
+    const groups  = uniqSorted(state.allLinks.map(x => x.group).concat([DEFAULT_GROUP]));
     const current = sel.value || "";
     sel.innerHTML = "";
-
-    const optAll = document.createElement("option");
-    optAll.value = "";
+    const optAll  = document.createElement("option");
+    optAll.value  = "";
     optAll.textContent = "All";
     sel.appendChild(optAll);
-
     for (const g of groups) {
       const o = document.createElement("option");
       o.value = g;
       o.textContent = g;
       sel.appendChild(o);
     }
-
-    // Keep current selection if still valid
-    const wanted = groups.includes(current) ? current : "";
-    sel.value = wanted;
-    state.filter.group = wanted;
+    sel.value = groups.includes(current) ? current : "";
+    state.filter.group = sel.value;
   }
+
+  // ─── View ──────────────────────────────────────────────────────────────────
 
   function setView(view) {
     state.filter.view = view;
     el("viewToggle").value = view;
-
-    if (view === "cards") {
-      el("cardsContainer").hidden = false;
-      el("tableContainer").hidden = true;
-    } else {
-      el("cardsContainer").hidden = true;
-      el("tableContainer").hidden = false;
-    }
+    el("cardsContainer").hidden = view !== "cards";
+    el("tableContainer").hidden = view !== "table";
   }
 
+  // ─── Open link ─────────────────────────────────────────────────────────────
+
   function openLink(link) {
-    const url = normalizeUrl(link.url);
-    if (link.open_in_frame) {
-      openInFrame(link);
-    } else {
-      window.open(link.url, "_blank", "noopener");
-    }
- }
- 
+    if (link.open_in_frame) openInFrame(link);
+    else window.open(link.url, "_blank", "noopener");
+  }
 
   function openInFrame(link) {
-    const frame = el("embedFrame");
     const url = normalizeUrl(link.url);
-    frame.src = url;
+    el("embedFrame").src = url;
     el("frameTitle").textContent = link.name || "Embedded";
-    el("frameUrl").textContent = url;
+    el("frameUrl").textContent   = url;
     el("frameArea").hidden = false;
     toast("info", `Opening "${link.name}" in frame…`);
   }
@@ -350,6 +351,15 @@
     el("embedFrame").src = "about:blank";
     el("frameArea").hidden = true;
   }
+
+  // ─── Permissions ───────────────────────────────────────────────────────────
+
+  function canEditLink(link) {
+    if (state.isAdmin) return true;
+    return link._layer === "personal" && link._owner === state.currentUser;
+  }
+
+  // ─── Render cards ──────────────────────────────────────────────────────────
 
   function renderCards(list) {
     const host = el("cardsContainer");
@@ -361,15 +371,16 @@
     }
 
     for (const { x: l } of list) {
-      const card = document.createElement("div");
-      card.className = "ld-card";
-      card.setAttribute("draggable", state.isAdmin ? "true" : "false");
+      const card      = document.createElement("div");
+      const isGlobal  = l._layer === "global";
+      const isOtherUser = !isGlobal && l._owner !== state.currentUser;
+
+      card.className = `ld-card ld-card--${isGlobal ? "global" : "personal"}`;
+      card.setAttribute("draggable", canEditLink(l) ? "true" : "false");
       card.dataset.id = l.id;
 
       const opening = l.open_in_frame ? "frame" : "new tab";
-
-      // Delete moved into Edit dialog
-      const adminButtons = state.isAdmin
+      const editBtn = canEditLink(l)
         ? `<button class="ld-btn" type="button" data-action="edit" data-id="${escapeHtml(l.id)}">Edit</button>`
         : "";
 
@@ -377,33 +388,36 @@
         ? escapeHtml(l.description)
         : `<span class="ld-muted">No description</span>`;
 
+      const layerPill = isGlobal
+        ? `<span class="ld-pill ld-pill--global">Global</span>`
+        : `<span class="ld-pill ld-pill--personal">Personal</span>`;
+
+      const ownerPill = (state.isAdmin && isOtherUser)
+        ? `<span class="ld-pill ld-pill--user">User: ${escapeHtml(l._owner)}</span>`
+        : "";
+
       card.innerHTML = `
-     <div class="ld-card-head">
-        <div class="ld-card-title">${escapeHtml(l.name)}</div>
-        <button class="ld-btn ld-btn-primary" type="button"
-          data-action="open" data-id="${escapeHtml(l.id)}">
-          Open
-        </button>
-     </div>
-
-     <div class="ld-card-meta">
-        <span class="ld-pill">${escapeHtml(l.group || DEFAULT_GROUP)}</span>
-       <span class="ld-pill">Open: ${opening}</span>
-     </div>
-
-     <div class="ld-card-url">
-        <a href="#" data-action="open" data-id="${escapeHtml(l.id)}">
-          ${escapeHtml(normalizeUrl(l.url))}
-        </a>
-     </div>
-
-  <div class="ld-card-desc">${descHtml}</div>
-
-  <div class="ld-card-actions">
-    ${adminButtons}
-  </div>
+        <div class="ld-card-head">
+          <div class="ld-card-title">${escapeHtml(l.name)}</div>
+          <button class="ld-btn ld-btn-primary" type="button"
+            data-action="open" data-id="${escapeHtml(l.id)}">Open</button>
+        </div>
+        <div class="ld-card-url">
+          <a href="#" data-action="open" data-id="${escapeHtml(l.id)}">
+            ${escapeHtml(normalizeUrl(l.url))}
+          </a>
+        </div>
+        <div class="ld-card-desc">${descHtml}</div>
+        <div class="ld-card-actions">
+          <div class="ld-card-meta">
+            ${layerPill}
+            <span class="ld-pill">${escapeHtml(l.group || DEFAULT_GROUP)}</span>
+            <span class="ld-pill">Open: ${opening}</span>
+            ${ownerPill}
+          </div>
+          ${editBtn}
+        </div>
       `;
-
       host.appendChild(card);
     }
 
@@ -411,82 +425,71 @@
       btn.addEventListener("click", (e) => {
         e.preventDefault();
         const action = btn.getAttribute("data-action");
-        const id = btn.getAttribute("data-id");
-        const link = state.links.find(x => x.id === id);
+        const id     = btn.getAttribute("data-id");
+        const link   = state.allLinks.find(x => x.id === id);
         if (!link) return;
-
         if (action === "open") openLink(link);
-        if (action === "frame") openInFrame(link);
         if (action === "edit") openEditDialog(link);
       });
     });
 
-    if (state.isAdmin) {
-      let dragId = null;
-
-      host.querySelectorAll(".ld-card[draggable='true']").forEach(card => {
-        card.addEventListener("dragstart", (e) => {
-          dragId = card.dataset.id;
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", dragId);
-        });
-
-        card.addEventListener("dragover", (e) => {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
-        });
-
-        card.addEventListener("drop", (e) => {
-          e.preventDefault();
-          const targetId = card.dataset.id;
-          const from = e.dataTransfer.getData("text/plain") || dragId;
-          moveById(from, targetId);
-          render();
-        });
+    let dragId = null;
+    host.querySelectorAll(".ld-card[draggable='true']").forEach(card => {
+      card.addEventListener("dragstart", (e) => {
+        dragId = card.dataset.id;
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", dragId);
       });
-    }
+      card.addEventListener("dragover",  (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; });
+      card.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const from = e.dataTransfer.getData("text/plain") || dragId;
+        moveById(from, card.dataset.id);
+        render();
+      });
+    });
   }
+
+  // ─── Render table ──────────────────────────────────────────────────────────
 
   function renderTable(list) {
     const host = el("tableContainer");
     host.innerHTML = "";
-
     const wrapper = document.createElement("div");
     wrapper.className = "ld-table";
 
     const rows = list.map(({ x: l }) => {
-      const opening = l.open_in_frame ? "frame" : "new tab";
-
-      // Delete moved into Edit dialog
-      const adminButtons = state.isAdmin
+      const isGlobal = l._layer === "global";
+      const opening  = l.open_in_frame ? "frame" : "new tab";
+      const editBtn  = canEditLink(l)
         ? `<button class="ld-btn" type="button" data-action="edit" data-id="${escapeHtml(l.id)}">Edit</button>`
         : "";
-
       const desc = l.description ? escapeHtml(l.description) : `<span class="ld-muted">—</span>`;
+      const layerBadge = isGlobal
+        ? `<span class="ld-pill ld-pill--global">Global</span>`
+        : `<span class="ld-pill ld-pill--personal">Personal</span>`;
+      const ownerCell = state.isAdmin ? `<td>${escapeHtml(l._owner || "")}</td>` : "";
 
       return `
-	<tr data-id="${escapeHtml(l.id)}" ${state.isAdmin ? `draggable="true"` : ""}>
-	  <td>${escapeHtml(l.name)}</td>
-	  <td>${escapeHtml(l.group || DEFAULT_GROUP)}</td>
-	  <td class="ld-url">
-		<a href="#" data-action="open" data-id="${escapeHtml(l.id)}">
-		  ${escapeHtml(normalizeUrl(l.url))}
-		</a>
-	  </td>
-	  <td>${desc}</td>
-	  <td>
-		<button class="ld-btn ld-btn-primary"
-		  type="button"
-		  data-action="open"
-		  data-id="${escapeHtml(l.id)}">
-		  Open
-		</button>
-		
-	  </td>
-	  <td>${opening}</td>
-	   <td>${state.isAdmin ? adminButtons : ""}</td>
-
-	</tr>
+        <tr data-id="${escapeHtml(l.id)}" data-layer="${escapeHtml(l._layer)}"
+          ${canEditLink(l) ? `draggable="true"` : ""}>
+          <td>${escapeHtml(l.name)}</td>
+          <td>${escapeHtml(l.group || DEFAULT_GROUP)}</td>
+          <td class="ld-url">
+            <a href="#" data-action="open" data-id="${escapeHtml(l.id)}">
+              ${escapeHtml(normalizeUrl(l.url))}
+            </a>
+          </td>
+          <td>${desc}</td>
+          <td>
+            <button class="ld-btn ld-btn-primary" type="button"
+              data-action="open" data-id="${escapeHtml(l.id)}">Open</button>
+          </td>
+          <td>${opening}</td>
+          <td>${layerBadge}</td>
+          ${ownerCell}
+          <td>${editBtn}</td>
+        </tr>
       `;
     }).join("");
 
@@ -494,129 +497,138 @@
       <table>
         <thead>
           <tr>
-            <th>Name</th>
-            <th>Group</th>
-            <th>URL</th>
-            <th>Description</th>
-            <th>Open</th>
-	    <th>Mode</th>
-            ${state.isAdmin ? "<th>Admin</th>" : ""}
+            <th>Name</th><th>Group</th><th>URL</th><th>Description</th>
+            <th>Open</th><th>Mode</th><th>Type</th>
+            ${state.isAdmin ? "<th>Owner</th>" : ""}
+            <th></th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
     `;
-
     host.appendChild(wrapper);
 
     wrapper.querySelectorAll("[data-action]").forEach(btn => {
       btn.addEventListener("click", (e) => {
         e.preventDefault();
         const action = btn.getAttribute("data-action");
-        const id = btn.getAttribute("data-id");
-        const link = state.links.find(x => x.id === id);
+        const id     = btn.getAttribute("data-id");
+        const link   = state.allLinks.find(x => x.id === id);
         if (!link) return;
-
         if (action === "open") openLink(link);
         if (action === "edit") openEditDialog(link);
       });
     });
 
-    if (state.isAdmin) {
-      let dragId = null;
-
-      wrapper.querySelectorAll("tbody tr[draggable='true']").forEach(tr => {
-        tr.addEventListener("dragstart", (e) => {
-          dragId = tr.dataset.id;
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", dragId);
-        });
-
-        tr.addEventListener("dragover", (e) => {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
-        });
-
-        tr.addEventListener("drop", (e) => {
-          e.preventDefault();
-          const targetId = tr.dataset.id;
-          const from = e.dataTransfer.getData("text/plain") || dragId;
-          moveById(from, targetId);
-          render();
-        });
+    let dragId = null;
+    wrapper.querySelectorAll("tbody tr[draggable='true']").forEach(tr => {
+      tr.addEventListener("dragstart", (e) => {
+        dragId = tr.dataset.id;
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", dragId);
       });
-    }
+      tr.addEventListener("dragover",  (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; });
+      tr.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const from = e.dataTransfer.getData("text/plain") || dragId;
+        moveById(from, tr.dataset.id);
+        render();
+      });
+    });
   }
+
+  // ─── Reorder ───────────────────────────────────────────────────────────────
+
+  function moveById(fromId, toId) {
+    if (!fromId || !toId || fromId === toId) return;
+    const fromLink = state.allLinks.find(x => x.id === fromId);
+    const toLink   = state.allLinks.find(x => x.id === toId);
+    if (!fromLink || !toLink) return;
+
+    if (fromLink._layer !== toLink._layer || fromLink._owner !== toLink._owner) {
+      toast("warn", "Can only reorder within the same layer.");
+      return;
+    }
+
+    if (fromLink._layer === "global") {
+      const arr  = state.globalLinks;
+      const from = arr.findIndex(x => x.id === fromId);
+      const to   = arr.findIndex(x => x.id === toId);
+      if (from < 0 || to < 0) return;
+      const [moved] = arr.splice(from, 1);
+      arr.splice(to, 0, moved);
+      state.dirtyGlobal = true;
+    } else {
+      const owner = fromLink._owner;
+      const arr   = state.personalLinks[owner];
+      if (!arr) return;
+      const from  = arr.findIndex(x => x.id === fromId);
+      const to    = arr.findIndex(x => x.id === toId);
+      if (from < 0 || to < 0) return;
+      const [moved] = arr.splice(from, 1);
+      arr.splice(to, 0, moved);
+      state.dirtyPersonal = true;
+    }
+
+    rebuildAllLinks();
+    renderOrderNote();
+  }
+
+  // ─── Order note ────────────────────────────────────────────────────────────
 
   function renderOrderNote() {
     const note = el("orderNote");
-    note.hidden = !state.dirtyOrder;
+    note.hidden = !(state.dirtyGlobal || state.dirtyPersonal);
     updateAdminUi();
   }
 
-  function moveById(fromId, toId) {
-    if (!state.isAdmin) return;
-    if (!fromId || !toId || fromId === toId) return;
-
-    const fromIdx = state.links.findIndex(x => x.id === fromId);
-    const toIdx = state.links.findIndex(x => x.id === toId);
-
-    if (fromIdx < 0 || toIdx < 0) return;
-
-    const [moved] = state.links.splice(fromIdx, 1);
-    state.links.splice(toIdx, 0, moved);
-
-    state.dirtyOrder = true;
-    renderOrderNote();
-  }
+  // ─── Render ────────────────────────────────────────────────────────────────
 
   function render() {
     syncThemeFromParent();
+    rebuildAllLinks();
     applyFilter();
-
     rebuildGroupFilter();
-
     setView(state.filter.view);
-
     renderOrderNote();
-
-    if (state.filter.view === "cards") {
-      renderCards(state.filtered);
-    } else {
-      renderTable(state.filtered);
-    }
+    if (state.filter.view === "cards") renderCards(state.filtered);
+    else renderTable(state.filtered);
   }
 
-  function openEditDialog(linkOrNull) {
-    if (!state.isAdmin) return;
+  // ─── Edit dialog ───────────────────────────────────────────────────────────
 
+  function openEditDialog(linkOrNull) {
+    if (linkOrNull && !canEditLink(linkOrNull)) return;
     state.editing = linkOrNull ? { ...linkOrNull } : null;
 
     el("dialogTitle").textContent = linkOrNull ? "Edit link" : "Add link";
-    el("fName").value = linkOrNull?.name || "";
-    el("fUrl").value = linkOrNull?.url || "";
-    el("fGroup").value = linkOrNull?.group || DEFAULT_GROUP;
-    el("fDesc").value = linkOrNull?.description || "";
+    el("fName").value    = linkOrNull?.name        || "";
+    el("fUrl").value     = linkOrNull?.url         || "";
+    el("fGroup").value   = linkOrNull?.group       || DEFAULT_GROUP;
+    el("fDesc").value    = linkOrNull?.description || "";
     el("fFrame").checked = !!linkOrNull?.open_in_frame;
+
+    // Global checkbox — admin only
+    const globalRow = document.getElementById("fGlobalRow");
+    if (globalRow) {
+      globalRow.hidden = !state.isAdmin;
+      el("fGlobal").checked = linkOrNull ? linkOrNull._layer === "global" : false;
+    }
 
     // Populate group datalist
     const dl = el("groupList");
     dl.innerHTML = "";
-    for (const g of uniqSorted(state.links.map(x => x.group)).concat([DEFAULT_GROUP])) {
+    for (const g of uniqSorted(state.allLinks.map(x => x.group)).concat([DEFAULT_GROUP])) {
       const o = document.createElement("option");
       o.value = g;
       dl.appendChild(o);
     }
 
-    // Show Delete only when editing an existing link
     const delBtn = document.getElementById("deleteBtn");
     if (delBtn) {
       if (linkOrNull) {
         delBtn.hidden = false;
-        delBtn.onclick = () => {
-          closeEditDialog();
-          openDeleteDialog(linkOrNull);
-        };
+        delBtn.onclick = () => { closeEditDialog(); openDeleteDialog(linkOrNull); };
       } else {
         delBtn.hidden = true;
         delBtn.onclick = null;
@@ -632,9 +644,8 @@
   }
 
   function openDeleteDialog(link) {
-    if (!state.isAdmin) return;
+    if (!canEditLink(link)) return;
     state.deleting = link;
-
     el("confirmText").textContent = `Delete "${link.name}"? This cannot be undone.`;
     el("confirmDialog").showModal();
   }
@@ -644,11 +655,109 @@
     state.deleting = null;
   }
 
+  // ─── Save link ─────────────────────────────────────────────────────────────
+
+  async function saveEditedLink() {
+    const isGlobal = state.isAdmin && el("fGlobal").checked;
+    const layer    = isGlobal ? "global" : "personal";
+    const owner    = isGlobal ? "" : (state.editing?._owner || state.currentUser);
+
+    let description = el("fDesc").value;
+
+    // Admin editing another user's personal link → tag description
+    if (state.isAdmin && state.editing
+        && state.editing._layer === "personal"
+        && state.editing._owner !== state.currentUser) {
+      if (!description.includes(ADMIN_EDITED_TAG)) {
+        description = description
+          ? `${description} ${ADMIN_EDITED_TAG}`
+          : ADMIN_EDITED_TAG;
+      }
+    }
+
+    const draft = hydrateLink({
+      id:            state.editing?.id || uuidv4(),
+      name:          el("fName").value,
+      url:           normalizeUrl(el("fUrl").value),
+      group:         el("fGroup").value || DEFAULT_GROUP,
+      description,
+      open_in_frame: el("fFrame").checked,
+      created_at:    state.editing?.created_at || nowIso(),
+      updated_at:    nowIso(),
+      _layer:        layer,
+      _owner:        owner,
+    }, layer, owner);
+
+    const err = validateLink(draft);
+    if (err) { toast("warn", err); return; }
+
+    if (state.editing) removeLinkFromState(state.editing);
+
+    if (layer === "global") {
+      state.globalLinks.push(draft);
+      state.dirtyGlobal = true;
+    } else {
+      if (!state.personalLinks[owner]) state.personalLinks[owner] = [];
+      state.personalLinks[owner].push(draft);
+      state.dirtyPersonal = true;
+    }
+
+    rebuildAllLinks();
+    renderOrderNote();
+
+    const ok = layer === "global"
+      ? await saveGlobalLinks()
+      : await savePersonalLinks(owner);
+
+    if (ok) {
+      toast("info", "Saved");
+      closeEditDialog();
+      rebuildGroupFilter();
+      render();
+    }
+  }
+
+  function removeLinkFromState(link) {
+    if (link._layer === "global") {
+      state.globalLinks = state.globalLinks.filter(x => x.id !== link.id);
+    } else {
+      const arr = state.personalLinks[link._owner];
+      if (arr) state.personalLinks[link._owner] = arr.filter(x => x.id !== link.id);
+    }
+  }
+
+  // ─── Delete link ───────────────────────────────────────────────────────────
+
+  async function deleteLink(link) {
+    removeLinkFromState(link);
+    let ok;
+    if (link._layer === "global") {
+      state.dirtyGlobal = true;
+      ok = await saveGlobalLinks();
+    } else {
+      state.dirtyPersonal = true;
+      ok = await savePersonalLinks(link._owner);
+    }
+    if (ok) {
+      toast("info", "Deleted");
+      closeDeleteDialog();
+      rebuildGroupFilter();
+      render();
+    }
+  }
+
+  // ─── Export / Import ───────────────────────────────────────────────────────
+
   function exportJson() {
-    const payload = JSON.stringify(state.links, null, 2);
+    const payload = JSON.stringify({
+      version: 2,
+      exported_at: nowIso(),
+      globalLinks:   state.globalLinks,
+      personalLinks: state.personalLinks,
+    }, null, 2);
     const blob = new Blob([payload], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
     a.href = url;
     a.download = "linkdash.json";
     document.body.appendChild(a);
@@ -660,51 +769,61 @@
 
   async function importJsonFile(file) {
     if (!state.isAdmin) return;
-    const text = await file.text();
+    const text   = await file.text();
     const parsed = JSON.parse(text);
-    const arr = Array.isArray(parsed?.links) ? parsed.links : Array.isArray(parsed) ? parsed : null;
-    if (!arr) throw new Error("Invalid JSON format (expected array or {links:[]}).");
 
-    const imported = arr.map(hydrateLink);
+    if (parsed.globalLinks || parsed.personalLinks) {
+      // New layered format
+      if (Array.isArray(parsed.globalLinks)) {
+        state.globalLinks = parsed.globalLinks.map(l => hydrateLink(l, "global", ""));
+        await saveGlobalLinks();
+      }
+      if (parsed.personalLinks && typeof parsed.personalLinks === "object") {
+        for (const [user, links] of Object.entries(parsed.personalLinks)) {
+          state.personalLinks[user] = (Array.isArray(links) ? links : [])
+            .map(l => hydrateLink(l, "personal", user));
+          await savePersonalLinks(user);
+        }
+      }
+    } else {
+      // Old flat format → import as global
+      const arr = Array.isArray(parsed?.links) ? parsed.links : Array.isArray(parsed) ? parsed : null;
+      if (!arr) throw new Error("Invalid JSON format.");
+      state.globalLinks = arr.map(l => hydrateLink(l, "global", ""));
+      await saveGlobalLinks();
+    }
 
-    // Replace existing set (preserve order from file)
-    state.links = imported;
-
-    state.dirtyOrder = true;
-    renderOrderNote();
-
-    // persist
-    await saveLinksToDisk();
-    saveLinksToLocalStorage();
-
+    rebuildAllLinks();
     rebuildGroupFilter();
     render();
-    toast("info", `Imported ${imported.length} links`);
+    toast("info", "Imported successfully");
   }
 
+  // ─── Save order ────────────────────────────────────────────────────────────
+
+  async function saveOrder() {
+    let ok = true;
+    if (state.dirtyGlobal && state.isAdmin) {
+      ok = await saveGlobalLinks() && ok;
+      if (ok) state.dirtyGlobal = false;
+    }
+    if (state.dirtyPersonal) {
+      for (const user of Object.keys(state.personalLinks)) {
+        ok = await savePersonalLinks(user) && ok;
+      }
+      if (ok) state.dirtyPersonal = false;
+    }
+    if (ok) { renderOrderNote(); toast("info", "Order saved"); }
+  }
+
+  // ─── Bind UI ───────────────────────────────────────────────────────────────
+
   function bindUi() {
-    // Search
-    el("searchInput").addEventListener("input", (e) => {
-      state.filter.q = e.target.value || "";
-      render();
-    });
+    el("searchInput").addEventListener("input",  (e) => { state.filter.q     = e.target.value || ""; render(); });
+    el("groupFilter").addEventListener("change", (e) => { state.filter.group = e.target.value || ""; render(); });
+    el("viewToggle").addEventListener("change",  (e) => { setView(e.target.value || "cards"); render(); });
 
-    // Group filter
-    el("groupFilter").addEventListener("change", (e) => {
-      state.filter.group = e.target.value || "";
-      render();
-    });
-
-    // View toggle
-    el("viewToggle").addEventListener("change", (e) => {
-      setView(e.target.value || "cards");
-      render();
-    });
-
-    // Add
     el("addBtn").addEventListener("click", () => openEditDialog(null));
-
-    // Import/export
     el("exportBtn").addEventListener("click", exportJson);
 
     el("importBtn").addEventListener("click", () => {
@@ -717,125 +836,54 @@
       if (!state.isAdmin) return;
       const f = e.target.files?.[0];
       if (!f) return;
-      try {
-        await importJsonFile(f);
-      } catch (err) {
-        toast("warn", `Import failed: ${err?.message || err}`);
-      }
+      try { await importJsonFile(f); }
+      catch (err) { toast("warn", `Import failed: ${err?.message || err}`); }
     });
 
-    // Save order
-    el("saveOrderBtn").addEventListener("click", async () => {
-      if (!state.isAdmin) return;
-      const ok = await saveLinksToDisk();
-      if (ok) {
-        state.dirtyOrder = false;
-        renderOrderNote();
-        saveLinksToLocalStorage();
-        toast("info", "Order saved");
-      }
-    });
-
-    // Close frame
+    el("saveOrderBtn").addEventListener("click", saveOrder);
     el("closeFrameBtn").addEventListener("click", closeFrame);
     el("openFrameNewTabBtn").addEventListener("click", () => {
       const url = el("embedFrame").src;
       if (url && url !== "about:blank") window.open(url, "_blank", "noopener,noreferrer");
     });
 
-    // Edit dialog: cancel
     el("cancelBtn").addEventListener("click", closeEditDialog);
 
-    // Edit dialog: save
-    el("editForm").addEventListener("submit", async () => {
-      if (!state.isAdmin) return;
-
-      const draft = hydrateLink({
-        id: state.editing?.id || uuidv4(),
-        name: el("fName").value,
-        url: normalizeUrl(el("fUrl").value),
-        group: el("fGroup").value || DEFAULT_GROUP,
-        description: el("fDesc").value,
-        open_in_frame: el("fFrame").checked,
-        created_at: state.editing?.created_at || nowIso(),
-        updated_at: nowIso(),
-      });
-
-      const err = validateLink(draft);
-      if (err) {
-        toast("warn", err);
-        return;
-      }
-
-      if (state.editing) {
-        const idx = state.links.findIndex(x => x.id === state.editing.id);
-        if (idx >= 0) state.links[idx] = draft;
-      } else {
-        state.links.push(draft);
-      }
-
-      state.dirtyOrder = true;
-      renderOrderNote();
-
-      const ok = await saveLinksToDisk();
-      if (ok) {
-        saveLinksToLocalStorage();
-        toast("info", "Saved");
-        closeEditDialog();
-        rebuildGroupFilter();
-        render();
-      }
+    el("editForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      await saveEditedLink();
     });
 
-    // Confirm delete: cancel
     el("confirmCancel").addEventListener("click", closeDeleteDialog);
 
-    // Confirm delete: confirm
-    el("confirmForm").addEventListener("submit", async () => {
-      if (!state.isAdmin) return;
+    el("confirmForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
       const link = state.deleting;
       if (!link) return;
-
-      state.links = state.links.filter(x => x.id !== link.id);
-
-      state.dirtyOrder = true;
-      renderOrderNote();
-
-      const ok = await saveLinksToDisk();
-      if (ok) {
-        saveLinksToLocalStorage();
-        toast("info", "Deleted");
-        closeDeleteDialog();
-        rebuildGroupFilter();
-        render();
-      }
+      await deleteLink(link);
     });
 
-    // Theme changes in shell: best-effort re-sync
     try {
       const obs = new MutationObserver(() => render());
       obs.observe(window.parent.document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   }
+
+  // ─── Init ──────────────────────────────────────────────────────────────────
 
   async function init() {
     syncThemeFromParent();
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) syncThemeFromParent();
-    });
-    await detectAdmin();
-    updateAdminUi();
-    await loadLinks();
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) syncThemeFromParent(); });
 
-    // Default view from localStorage (optional)
+    await detectAdmin();
+    await detectCurrentUser();
+    updateAdminUi();
+    await loadAllLinks();
+
     try {
       const v = window.localStorage.getItem("linkdash.view");
       if (v === "table" || v === "cards") state.filter.view = v;
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
 
     bindUi();
     rebuildGroupFilter();
