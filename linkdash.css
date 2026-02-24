@@ -7,7 +7,11 @@
 
 [hidden] { display: none !important; }
 
-html, body { height: 100%; }
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
 
 /* =========================================
    Token mapping (PF -> ld) – NO FALLBACKS
@@ -78,7 +82,9 @@ html, body { height: 100%; }
    Page root
    ========================================= */
 .ld-page {
-  min-height: 100vh;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
   padding: 16px;
   background-color: var(--ld-bg);
   color: var(--ld-text);
