@@ -380,8 +380,14 @@
       card.dataset.id = l.id;
 
       const opening = l.open_in_frame ? "frame" : "new tab";
+
+      const iconDup = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z"/></svg>`;
+
       const editBtn = canEditLink(l)
-        ? `<button class="ld-btn" type="button" data-action="edit" data-id="${escapeHtml(l.id)}">Edit</button>`
+        ? `<button class="ld-btn ld-btn-xs" type="button" data-action="edit" data-id="${escapeHtml(l.id)}">Edit</button>`
+        : "";
+      const dupBtn = canEditLink(l)
+        ? `<button class="ld-btn ld-btn-icon" type="button" data-action="duplicate" data-id="${escapeHtml(l.id)}" title="Duplicate">${iconDup}</button>`
         : "";
 
       const descHtml = l.description
@@ -408,14 +414,17 @@
           </a>
         </div>
         <div class="ld-card-desc">${descHtml}</div>
-        <div class="ld-card-actions">
+        <div class="ld-card-footer">
           <div class="ld-card-meta">
             ${layerPill}
             <span class="ld-pill">${escapeHtml(l.group || DEFAULT_GROUP)}</span>
             <span class="ld-pill">Open: ${opening}</span>
             ${ownerPill}
           </div>
-          ${editBtn}
+          <div class="ld-card-btns">
+            ${editBtn}
+            ${dupBtn}
+          </div>
         </div>
       `;
       host.appendChild(card);
@@ -428,8 +437,9 @@
         const id     = btn.getAttribute("data-id");
         const link   = state.allLinks.find(x => x.id === id);
         if (!link) return;
-        if (action === "open") openLink(link);
-        if (action === "edit") openEditDialog(link);
+        if (action === "open")      openLink(link);
+        if (action === "edit")      openEditDialog(link);
+        if (action === "duplicate") duplicateLink(link);
       });
     });
 
@@ -461,8 +471,12 @@
     const rows = list.map(({ x: l }) => {
       const isGlobal = l._layer === "global";
       const opening  = l.open_in_frame ? "frame" : "new tab";
+      const iconDupT = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M19 21H8V7h11m0-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m-3-4H4a2 2 0 0 0-2 2v14h2V3h12V1z"/></svg>`;
       const editBtn  = canEditLink(l)
-        ? `<button class="ld-btn" type="button" data-action="edit" data-id="${escapeHtml(l.id)}">Edit</button>`
+        ? `<button class="ld-btn ld-btn-xs" type="button" data-action="edit" data-id="${escapeHtml(l.id)}">Edit</button>`
+        : "";
+      const dupBtn = canEditLink(l)
+        ? `<button class="ld-btn ld-btn-icon" type="button" data-action="duplicate" data-id="${escapeHtml(l.id)}" title="Duplicate">${iconDupT}</button>`
         : "";
       const desc = l.description ? escapeHtml(l.description) : `<span class="ld-muted">—</span>`;
       const layerBadge = isGlobal
@@ -488,7 +502,7 @@
           <td>${opening}</td>
           <td>${layerBadge}</td>
           ${ownerCell}
-          <td>${editBtn}</td>
+          <td class="ld-table-actions">${editBtn}${dupBtn}</td>
         </tr>
       `;
     }).join("");
@@ -515,8 +529,9 @@
         const id     = btn.getAttribute("data-id");
         const link   = state.allLinks.find(x => x.id === id);
         if (!link) return;
-        if (action === "open") openLink(link);
-        if (action === "edit") openEditDialog(link);
+        if (action === "open")      openLink(link);
+        if (action === "edit")      openEditDialog(link);
+        if (action === "duplicate") duplicateLink(link);
       });
     });
 
@@ -691,6 +706,11 @@
     const err = validateLink(draft);
     if (err) { toast("warn", err); return; }
 
+    // Track whether the link is switching layers so we can persist the old layer too
+    const prevLayer = state.editing?._layer || null;
+    const prevOwner = state.editing?._owner || null;
+    const layerChanged = state.editing && prevLayer !== layer;
+
     if (state.editing) removeLinkFromState(state.editing);
 
     if (layer === "global") {
@@ -705,9 +725,22 @@
     rebuildAllLinks();
     renderOrderNote();
 
-    const ok = layer === "global"
+    // Save the destination layer
+    let ok = layer === "global"
       ? await saveGlobalLinks()
       : await savePersonalLinks(owner);
+
+    // If the link moved between layers, also persist the now-empty source layer
+    // so the old entry is removed from disk and doesn't reappear on next load
+    if (ok && layerChanged) {
+      if (prevLayer === "global") {
+        state.dirtyGlobal = true;
+        ok = await saveGlobalLinks();
+      } else if (prevLayer === "personal" && prevOwner) {
+        state.dirtyPersonal = true;
+        ok = await savePersonalLinks(prevOwner);
+      }
+    }
 
     if (ok) {
       toast("info", "Saved");
@@ -724,6 +757,39 @@
       const arr = state.personalLinks[link._owner];
       if (arr) state.personalLinks[link._owner] = arr.filter(x => x.id !== link.id);
     }
+  }
+
+  // ─── Duplicate link ────────────────────────────────────────────────────────
+
+  async function duplicateLink(link) {
+    const clone = hydrateLink({
+      ...link,
+      id:         uuidv4(),
+      name:       `${link.name} (copy)`,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    }, link._layer, link._owner);
+
+    if (clone._layer === "global") {
+      state.globalLinks.push(clone);
+      state.dirtyGlobal = true;
+      const ok = await saveGlobalLinks();
+      if (!ok) return;
+    } else {
+      const owner = clone._owner || state.currentUser;
+      if (!state.personalLinks[owner]) state.personalLinks[owner] = [];
+      state.personalLinks[owner].push(clone);
+      state.dirtyPersonal = true;
+      const ok = await savePersonalLinks(owner);
+      if (!ok) return;
+    }
+
+    rebuildAllLinks();
+    rebuildGroupFilter();
+    render();
+    toast("info", `Duplicated "${link.name}"`);
+    const fresh = state.allLinks.find(x => x.id === clone.id);
+    if (fresh) openEditDialog(fresh);
   }
 
   // ─── Delete link ───────────────────────────────────────────────────────────

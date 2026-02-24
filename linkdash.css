@@ -237,6 +237,23 @@ html, body {
 /* used in edit dialog (top-left destructive) */
 .ld-btn-danger-corner { margin-right: auto; }
 
+/* Extra-small text button – used for Edit on card row 1 */
+.ld-btn-xs {
+  padding: 2px 7px;
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+/* Table: keeps Edit | Duplicate side-by-side */
+.ld-table-actions {
+  white-space: nowrap;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
 /* =========================================
    Notes / tip / toast
    ========================================= */
@@ -411,26 +428,43 @@ html, body {
   overflow: hidden;
 }
 
-.ld-card-actions {
+/* Single-row footer: pills left, buttons right — always inline */
+.ld-card-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  flex-wrap: wrap;
   margin-top: 4px;
+  min-width: 0;
 }
 
-.ld-card-actions .ld-card-meta {
+.ld-card-meta {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  align-items: center;
+  color: var(--ld-muted);
+  font-size: 12px;
+  min-width: 0;
+  flex: 1;
 }
 
-.ld-card-actions .ld-btn[data-action="edit"] {
-  padding: 2px 6px;
-  font-size: 12px;
-  line-height: 1.2;
+.ld-card-btns {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
   margin-left: auto;
+}
+
+/* Icon-only square button */
+.ld-btn-icon {
+  padding: 3px 5px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 /* =========================================
